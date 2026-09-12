@@ -27,7 +27,7 @@ function getOpenRouter(): OpenAI {
   return openrouterClient;
 }
 
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL ?? "nvidia/nemotron-3-ultra-550b-a55b:free";
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL ?? "google/gemini-3.7-flash";
 
 const OUTLINE_TOOL = {
   name: "build_outline",
@@ -164,38 +164,31 @@ async function generateWithOpenRouter(prompt: string): Promise<PresentationOutli
   const client = getOpenRouter();
   console.log(`[openrouter] model=${OPENROUTER_MODEL}`);
 
-  // ponytail: try function calling first (most reliable), fall back to raw JSON.
+  const jsonPrompt = `${prompt}\n\nReturn ONLY a JSON object with this exact structure, no markdown, no explanation:\n{"title":"...","slides":[{"title":"...","bullets":["...","...","..."],"speakerNotes":"..."}]}`;
+
   const completion = await client.chat.completions.create({
     model: OPENROUTER_MODEL,
     max_tokens: 4096,
-    tools: [{ type: "function", function: OUTLINE_FN }],
-    tool_choice: { type: "function", function: { name: "build_outline" } },
-    messages: [{ role: "user", content: prompt }],
+    messages: [{ role: "user", content: jsonPrompt }],
   });
 
   const msg = completion.choices?.[0]?.message;
   console.log("[openrouter] finish_reason:", completion.choices?.[0]?.finish_reason);
+  console.log("[openrouter] full message:", JSON.stringify(msg).slice(0, 500));
 
-  // Check for tool call
-  const toolCall = msg?.tool_calls?.[0] as
-    | { type: "function"; function: { name: string; arguments: string } }
-    | undefined;
-  if (toolCall) {
-    console.log("[openrouter] got tool call");
-    return JSON.parse(toolCall.function.arguments) as PresentationOutline;
-  }
-
-  // Fallback: model returned plain text — try parsing as JSON
   const content = msg?.content;
   if (content) {
-    console.log("[openrouter] no tool call, trying raw JSON. content:", content.slice(0, 300));
+    console.log("[openrouter] content:", content.slice(0, 300));
     try {
       return extractOutline(content);
     } catch {
-      // Try extracting JSON from markdown code blocks
       const match = content.match(/```(?:json)?\s*([\s\S]*?)```/);
       if (match) {
         return extractOutline(match[1]);
+      }
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        return extractOutline(jsonMatch[0]);
       }
     }
   }
